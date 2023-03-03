@@ -241,7 +241,6 @@ def main():
 
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(levelname)s %(message)s')
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 
     # Set random seed
     torch.manual_seed(777)
@@ -253,6 +252,7 @@ def main():
     distributed = int(args.world_size) > 1
     if distributed:
         if gemini_state:
+            print("[RANK]:", args.rank)
             colossalai.launch(config={},
                 rank=args.rank,
                 world_size=args.world_size,
@@ -361,14 +361,12 @@ def main():
         writer = SummaryWriter(os.path.join(args.tensorboard_dir, exp_id))
 
     if distributed:
-        assert (torch.cuda.is_available())
         # use colossalai's gemini
         if gemini_state:
             assert (torch.cuda.is_available())
-            device = torch.device(f'cuda:{args.rank}')
-
+            device = get_current_device()
             gemini_config = dict(strict_ddp_mode=True,
-                                 device=f'cuda:{args.rank}',
+                                 device=device,
                                  placement_policy='cuda',
                                  pin_memory=True,
                                  hidden_dim=configs['encoder_conf']['linear_units'],
@@ -380,8 +378,12 @@ def main():
 
             zero_stage = 2
             # wrap your model and optimizer
-            model = zero_model_wrapper(model, zero_stage, gemini_config)
-            
+            ## TODO: zero_model_wrapper fails to set model device for stages 1 and 2
+            model = zero_model_wrapper(model, zero_stage, gemini_config).to(device)
+            # print("### Gemini config", gemini_config['device'])
+            # for param in model.parameters():
+            #     print("### Model param", param.device)
+            #     break
             optimizer = zero_optim_wrapper(model, optimizer)
             print('success with colossalai!')
 
