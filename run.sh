@@ -3,10 +3,10 @@
 # Copyright 2019 Mobvoi Inc. All Rights Reserved.
 # Use this to control how many gpu you use, It's 1-gpu training if you specify
 # just 1gpu, otherwise it's is multiple gpu training based on DDP in pytorch
-export CUDA_VISIBLE_DEVICES="0,1"
+export CUDA_VISIBLE_DEVICES="6,7"
 
 # Whether to use Gemini Optimizer, 'true' or 'false'
-gemini_state=true
+gemini_state=false
 # wav data dir
 wave_data=data
 data_url=www.openslr.org/resources/12
@@ -14,7 +14,7 @@ data_dir=/data/scratch/librspeech/
 
 # Optional train_config
 # 1. conf/train_transformer_large.yaml: Standard transformer
-train_config=examples/librispeech/rnnt/conf/conformer_rnnt.yaml
+train_config=examples/librispeech/s0/conf/train_u2++_conformer.yaml
 # train_config=examples/librispeech/rnnt/conf/conformer_rnnt.yaml
 checkpoint=
 cmvn=true
@@ -32,8 +32,8 @@ bpemode=unigram
 set -e
 set -u
 set -o pipefail
-train_set=dev_clean
-dev_set=dev_other
+train_set=dev
+dev_set=dev
 recog_set="test_clean test_other dev_clean dev_other"
 
 # Download data (training data too large; use dev temporarily)
@@ -130,14 +130,15 @@ if [[ $gemini_state == t* ]] || [[ $gemini_state == T* ]] || [ $gemini_state == 
         --ddp.dist_backend $dist_backend \
         --num_workers 1 \
         $cmvn_opts \
-        --gemini $gemini_state \
         --pin_memory \
         --rank $i \
         --world_size $num_gpus \
         --port 28600 \
-        --host localhost
+        --host localhost \
+        --gemini $gemini_state
     } &
     done
+    wait
 else
     echo "NOT USING COLOSSALAI"
     for ((i = 0; i < $num_gpus; ++i)); do
