@@ -6,7 +6,7 @@
 export CUDA_VISIBLE_DEVICES="0,1"
 
 # Whether to use Gemini Optimizer, 'true' or 'false'
-gemini_state=true
+gemini_state=false
 # wav data dir
 wave_data=data
 data_url=www.openslr.org/resources/12
