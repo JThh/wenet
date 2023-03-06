@@ -38,10 +38,8 @@ from wenet.utils.config import override_config
 from wenet.utils.init_model import init_model
 
 import colossalai
-from colossalai.nn.parallel import GeminiDDP
 from colossalai.utils import get_current_device
 from colossalai.utils.model.colo_init_context import ColoInitContext
-from colossalai.nn.optimizer.gemini_optimizer import GeminiAdamOptimizer
 from colossalai.nn.optimizer import HybridAdam
 from colossalai.nn.parallel import zero_model_wrapper, zero_optim_wrapper
 

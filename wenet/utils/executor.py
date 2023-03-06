@@ -19,7 +19,7 @@ from contextlib import nullcontext
 # from contextlib import suppress as nullcontext
 import torch
 from torch.nn.utils import clip_grad_norm_
-from torch.profiler import profile, record_function, ProfilerActivity
+# from torch.profiler import profile, record_function, ProfilerActivity
 
 
 class Executor:
@@ -53,89 +53,89 @@ class Executor:
             model_context = nullcontext
         num_seen_utts = 0
         with model_context():
-            with profile(activities=[ProfilerActivity.CUDA],
-                profile_memory=True, record_shapes=True) as prof:
-                for batch_idx, batch in enumerate(data_loader):
-                    key, feats, target, feats_lengths, target_lengths = batch
-                    feats = feats.to(device)
-                    target = target.to(device)
-                    feats_lengths = feats_lengths.to(device)
-                    target_lengths = target_lengths.to(device)
-                    num_utts = target_lengths.size(0)
-                    if num_utts == 0:
-                        continue
-                    context = None
-                    # Disable gradient synchronizations across DDP processes.
-                    # Within this context, gradients will be accumulated on module
-                    # variables, which will later be synchronized.
-                    if is_distributed and batch_idx % accum_grad != 0:
-                        context = model.no_sync
-                    # Used for single gpu training and DDP gradient synchronization
-                    # processes.
+            # with profile(activities=[ProfilerActivity.CUDA],
+            #     profile_memory=True, record_shapes=True) as prof:
+            for batch_idx, batch in enumerate(data_loader):
+                key, feats, target, feats_lengths, target_lengths = batch
+                feats = feats.to(device)
+                target = target.to(device)
+                feats_lengths = feats_lengths.to(device)
+                target_lengths = target_lengths.to(device)
+                num_utts = target_lengths.size(0)
+                if num_utts == 0:
+                    continue
+                context = None
+                # Disable gradient synchronizations across DDP processes.
+                # Within this context, gradients will be accumulated on module
+                # variables, which will later be synchronized.
+                if is_distributed and batch_idx % accum_grad != 0:
+                    context = model.no_sync
+                # Used for single gpu training and DDP gradient synchronization
+                # processes.
+                else:
+                    context = nullcontext
+                with context():
+                    # autocast context
+                    # The more details about amp can be found in
+                    # https://pytorch.org/docs/stable/notes/amp_examples.html
+                    if gemini_state:
+                        loss_dict = model(feats, feats_lengths, target,
+                                            target_lengths)
+                        loss = loss_dict['loss'] / accum_grad
                     else:
-                        context = nullcontext
-                    with context():
-                        # autocast context
-                        # The more details about amp can be found in
-                        # https://pytorch.org/docs/stable/notes/amp_examples.html
-                        if gemini_state:
+                        with torch.cuda.amp.autocast(scaler is not None):
                             loss_dict = model(feats, feats_lengths, target,
                                                 target_lengths)
                             loss = loss_dict['loss'] / accum_grad
+                    if use_amp:
+                        scaler.scale(loss).backward()
+                    else:
+                        if gemini_state:
+                            optimizer.backward(loss)
                         else:
-                            with torch.cuda.amp.autocast(scaler is not None):
-                                loss_dict = model(feats, feats_lengths, target,
-                                                    target_lengths)
-                                loss = loss_dict['loss'] / accum_grad
-                        if use_amp:
-                            scaler.scale(loss).backward()
-                        else:
-                            if gemini_state:
-                                optimizer.backward(loss)
-                            else:
-                                loss.backward()
+                            loss.backward()
 
-                    num_seen_utts += num_utts
-                    if batch_idx % accum_grad == 0:
-                        if rank == 0 and writer is not None:
-                            writer.add_scalar('train_loss', loss.item(), self.step)
-                        # Use mixed precision training
-                        if use_amp:
-                            scaler.unscale_(optimizer)
+                num_seen_utts += num_utts
+                if batch_idx % accum_grad == 0:
+                    if rank == 0 and writer is not None:
+                        writer.add_scalar('train_loss', loss.item(), self.step)
+                    # Use mixed precision training
+                    if use_amp:
+                        scaler.unscale_(optimizer)
+                        grad_norm = clip_grad_norm_(model.parameters(), clip)
+                        # Must invoke scaler.update() if unscale_() is used in
+                        # the iteration to avoid the following error:
+                        #   RuntimeError: unscale_() has already been called
+                        #   on this optimizer since the last update().
+                        # We don't check grad here since that if the gradient
+                        # has inf/nan values, scaler.step will skip
+                        # optimizer.step().
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        if not gemini_state:
                             grad_norm = clip_grad_norm_(model.parameters(), clip)
-                            # Must invoke scaler.update() if unscale_() is used in
-                            # the iteration to avoid the following error:
-                            #   RuntimeError: unscale_() has already been called
-                            #   on this optimizer since the last update().
-                            # We don't check grad here since that if the gradient
-                            # has inf/nan values, scaler.step will skip
-                            # optimizer.step().
-                            scaler.step(optimizer)
-                            scaler.update()
-                        else:
-                            if not gemini_state:
-                                grad_norm = clip_grad_norm_(model.parameters(), clip)
-                                if torch.isfinite(grad_norm):
-                                    optimizer.step()
-                            else:
+                            if torch.isfinite(grad_norm):
                                 optimizer.step()
-                        optimizer.zero_grad()
-                        scheduler.step()
-                        self.step += 1
-                    if batch_idx % log_interval == 0:
-                        lr = optimizer.param_groups[0]['lr']
-                        log_str = 'TRAIN Batch {}/{} loss {:.6f} '.format(
-                            epoch, batch_idx,
-                            loss.item() * accum_grad)
-                        for name, value in loss_dict.items():
-                            if name != 'loss' and value is not None:
-                                log_str += '{} {:.6f} '.format(name, value.item())
-                        log_str += 'lr {:.8f} rank {} '.format(lr, rank)
-                        log_str += '{:.2f} GB'.format(torch.cuda.max_memory_allocated()/1024**3)
-                        logging.debug(log_str)
+                        else:
+                            optimizer.step()
+                    optimizer.zero_grad()
+                    scheduler.step()
+                    self.step += 1
+                if batch_idx % log_interval == 0:
+                    lr = optimizer.param_groups[0]['lr']
+                    log_str = 'TRAIN Batch {}/{} loss {:.6f} '.format(
+                        epoch, batch_idx,
+                        loss.item() * accum_grad)
+                    for name, value in loss_dict.items():
+                        if name != 'loss' and value is not None:
+                            log_str += '{} {:.6f} '.format(name, value.item())
+                    log_str += 'lr {:.8f} rank {} '.format(lr, rank)
+                    log_str += '{:.2f} GB'.format(torch.cuda.max_memory_allocated()/1024**3)
+                    logging.debug(log_str)
 
-                    prof.step()
-                    print(prof.key_averages().table(row_limit=10))
+                    # prof.step()
+                    # print(prof.key_averages().table(row_limit=10))
 
     def cv(self, model, data_loader, device, args):
         ''' Cross validation on
